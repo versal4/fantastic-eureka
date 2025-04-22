@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>AutoCAD-like Rectangle Filling</title>
+  <style>
+    body { 
+      font-family: 'Arial', sans-serif; 
+      margin: 0;
+      padding: 0;
+      background: #f0f0f0;
+      overflow: hidden;
+    }
+    .toolbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: #333;
+      display: flex;
+      padding: 5px;
+      gap: 5px;
+      z-index: 100;
+    }
+    .tool-button {
+      width: 40px;
+      height: 40px;
+      background: #555;
+      color: white;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+    .tool-button:hover {
+      background: #666;
+    }
+    .tool-button.active {
+      background: #4CAF50;
+    }
+    .main-container {
+      display: flex;
+      margin-top: 50px;
+      gap: 20px;
+      height: calc(100vh - 80px);
+    }
+    canvas { 
+      background: white;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .controls { 
+      display: flex; 
+      flex-direction: column; 
+      gap: 10px;
+      background: white;
+      padding: 15px;
+      border-radius: 5px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.1);
+      width: 250px;
+      overflow-y: auto;
+    }
+    .status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #333;
+      color: white;
+      padding: 5px 10px;
+      font-family: monospace;
+      display: flex;
+      justify-content: space-between;
+    }
+    input[type="number"] {
+      width: 60px;
+      padding: 5px;
+    }
+    button {
+      padding: 8px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    .command-line {
+      margin-top: 10px;
+      padding: 5px;
+      font-family: monospace;
+      background: #222;
+      color: lime;
+    }
+    .snap-indicator {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: red;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      display: none;
+    }
+    .selection-rect {
+      position: absolute;
+      border: 1px dashed #0066FF;
+      background: rgba(0, 102, 255, 0.1);
+      pointer-events: none;
+      display: none;
+    }
+    .results {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f8f8f8;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button class="tool-button" title="Przesuń (P)" id="panTool">✥</button>
+    <button class="tool-button active" title="Linia (L)" id="lineTool">⎯</button>
+    <button class="tool-button" title="Prostokąt (REC)" id="rectTool">□</button>
+    <button class="tool-button" title="Okrąg (C)" id="circleTool">○</button>
+    <button class="tool-button" title="Wielokąt (POL)" id="polygonTool">⬢</button>
+    <button class="tool-button" title="Zaznacz (Z)" id="selectTool">☐</button>
+    <button class="tool-button" title="Wypełnij (W)" id="fillTool">▧</button>
+    <button class="tool-button" title="Cofnij (Ctrl+Z)" id="undoTool">↩</button>
+    <div style="flex-grow: 1;"></div>
+    <button class="tool-button" title="ORTHO (F8)" id="orthoMode">O</button>
+    <button class="tool-button" title="POLAR (F10)" id="polarMode">P</button>
+    <button class="tool-button" title="SNAP (F9)" id="snapMode">S</button>
+    <button class="tool-button" title="Grid (F7)" id="gridMode">#</button>
+  </div>
+
+  <div class="main-container">
+    <div class="controls">
+      <h2>Parametry</h2>
+      <label>Szerokość prostokąta (cm): <input type="number" id="rectWidth" value="5" min="1"></label>
+      <label>Długość prostokąta (cm): <input type="number" id="rectHeight" value="10" min="1"></label>
+      <div id="lineLengthContainer" style="display: none;">
+        <label>Długość linii: <input type="number" id="lineLength" value="0" min="0"></label>
+      </div>
+      <button id="closeShape">Zamknij kształt (C)</button>
+      <button id="fillSelected">Wypełnij zaznaczenie</button>
+      <button id="calculate">Oblicz wypełnienie</button>
+      <button id="reset">Reset (DEL)</button>
+      <div class="command-line" id="commandLine">Komenda: _LINE</div>
+      <div class="results" id="results">
+        <h3>Wyniki wypełnienia:</h3>
+        <div id="scrapsInfo"></div>
+        <div id="rectanglesInfo"></div>
+        <div id="cutsInfo"></div>
+      </div>
+    </div>
+    <div style="position: relative; flex-grow: 1; overflow: hidden;">
+      <canvas id="canvas"></canvas>
+      <div class="snap-indicator" id="snapIndicator"></div>
+      <div class="selection-rect" id="selectionRect"></div>
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <span id="coords">Współrzędne: 0,0</span>
+    <span id="modes">ORTHO: OFF | POLAR: ON | SNAP: ON | GRID: ON</span>
+  </div>
+
+  <script>
+    // Inicjalizacja canvas
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    resizeCanvas();
+    
+    window.addEventListener('resize', resizeCanvas);
+    
+    function resizeCanvas() {
+      canvas.width = window.innerWidth - 300;
+      canvas.height = window.innerHeight - 80;
+      draw();
+    }
+
+    // Elementy UI
+    const rectWidthInput = document.getElementById('rectWidth');
+    const rectHeightInput = document.getElementById('rectHeight');
+    const lineLengthInput = document.getElementById('lineLength');
+    const lineLengthContainer = document.getElementById('lineLengthContainer');
+    const closeShapeBtn = document.getElementById('closeShape');
+    const fillSelectedBtn = document.getElementById('fillSelected');
+    const calculateBtn = document.getElementById('calculate');
+    const resetBtn = document.getElementById('reset');
+    const scrapsInfo = document.getElementById('scrapsInfo');
+    const rectanglesInfo = document.getElementById('rectanglesInfo');
+    const cutsInfo = document.getElementById('cutsInfo');
+    const statusBar = document.getElementById('statusBar');
+    const coordsDisplay = document.getElementById('coords');
+    const modesDisplay = document.getElementById('modes');
+    const commandLine = document.getElementById('commandLine');
+    const snapIndicator = document.getElementById('snapIndicator');
+    const selectionRect = document.getElementById('selectionRect');
+
+    // Przyciski narzędzi
+    const panTool = document.getElementById('panTool');
+    const lineTool = document.getElementById('lineTool');
+    const rectTool = document.getElementById('rectTool');
+    const circleTool = document.getElementById('circleTool');
+    const polygonTool = document.getElementById('polygonTool');
+    const selectTool = document.getElementById('selectTool');
+    const fillTool = document.getElementById('fillTool');
+    const undoTool = document.getElementById('undoTool');
+    const orthoModeBtn = document.getElementById('orthoMode');
+    const polarModeBtn = document.getElementById('polarMode');
+    const snapModeBtn = document.getElementById('snapMode');
+    const gridModeBtn = document.getElementById('gridMode');
+
+    // Stan aplikacji
+    let state = {
+      points: [],
+      tempPoint: null,
+      isClosed: false,
+      isDrawing: false,
+      currentTool: 'line',
+      isOrtho: false,
+      isPolar: true,
+      isSnap: true,
+      isGrid: true,
+      isPanning: false,
+      isSelecting: false,
+      snapPoints: [],
+      currentCommand: 'LINE',
+      inputValue: '',
+      objects: [],
+      selectedObjects: [],
+      selectionStart: null,
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+      history: [],
+      historyIndex: -1,
+      currentLineLength: 0,
+      fillResults: {
+        rectangles: 0,
+        scraps: [],
+        cuts: []
+      }
+    };
+
+    // Stałe
+    const SNAP_DISTANCE = 10;
+    const GRID_SIZE = 20;
+    const POLAR_ANGLES = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180];
+    const MIN_SCALE = 0.1;
+    const MAX_SCALE = 10;
+
+    // Inicjalizacja
+    initEventListeners();
+    updateUI();
+    draw();
+    saveState();
+
+    function initEventListeners() {
+      // Wybór narzędzi
+      panTool.addEventListener('click', () => setActiveTool('pan'));
+      lineTool.addEventListener('click', () => setActiveTool('line'));
+      rectTool.addEventListener('click', () => setActiveTool('rect'));
+      circleTool.addEventListener('click', () => setActiveTool('circle'));
+      polygonTool.addEventListener('click', () => setActiveTool('polygon'));
+      selectTool.addEventListener('click', () => setActiveTool('select'));
+      fillTool.addEventListener('click', () => setActiveTool('fill'));
+      undoTool.addEventListener('click', undo);
+
+      // Tryby
+      orthoModeBtn.addEventListener('click', toggleOrtho);
+      polarModeBtn.addEventListener('click', togglePolar);
+      snapModeBtn.addEventListener('click', toggleSnap);
+      gridModeBtn.addEventListener('click', toggleGrid);
+
+      // Przyciski
+      closeShapeBtn.addEventListener('click', closeShape);
+      fillSelectedBtn.addEventListener('click', fillSelected);
+      calculateBtn.addEventListener('click', calculateFilling);
+      resetBtn.addEventListener('click', reset);
+
+      // Klawiatura
+      document.addEventListener('keydown', handleKeyDown);
+      document.addEventListener('keyup', handleKeyUp);
+      lineLengthInput.addEventListener('input', updateLineLength);
+
+      // Canvas
+      canvas.addEventListener('mousedown', handleMouseDown);
+      canvas.addEventListener('mousemove', handleMouseMove);
+      canvas.addEventListener('mouseup', handleMouseUp);
+      canvas.addEventListener('wheel', handleWheel, { passive: false });
+      canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+      
+      // Touch events
+      canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+      canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+      canvas.addEventListener('touchend', handleTouchEnd);
+    }
+
+    function setActiveTool(tool) {
+      resetDrawingState();
+      state.currentTool = tool;
+      
+      // Zaktualizuj przyciski
+      panTool.classList.remove('active');
+      lineTool.classList.remove('active');
+      rectTool.classList.remove('active');
+      circleTool.classList.remove('active');
+      polygonTool.classList.remove('active');
+      selectTool.classList.remove('active');
+      fillTool.classList.remove('active');
+      
+      switch(tool) {
+        case 'pan': 
+          panTool.classList.add('active');
+          state.currentCommand = 'PAN';
+          break;
+        case 'line': 
+          lineTool.classList.add('active');
+          state.currentCommand = 'LINE';
+          break;
+        case 'rect': 
+          rectTool.classList.add('active');
+          state.currentCommand = 'RECTANG';
+          break;
+        case 'circle': 
+          circleTool.classList.add('active');
+          state.currentCommand = 'CIRCLE';
+          break;
+        case 'polygon': 
+          polygonTool.classList.add('active');
+          state.currentCommand = 'POLYGON';
+          break;
+        case 'select': 
+          selectTool.classList.add('active');
+          state.currentCommand = 'SELECT';
+          break;
+        case 'fill': 
+          fillTool.classList.add('active');
+          state.currentCommand = 'FILL';
+          break;
+      }
+      
+      // Pokazuj/ukryj input długości linii
+      lineLengthContainer.style.display = tool === 'line' ? 'block' : 'none';
+      
+      updateUI();
+    }
+
+    function toggleOrtho() {
+      state.isOrtho = !state.isOrtho;
+      updateUI();
+    }
+
+    function togglePolar() {
+      state.isPolar = !state.isPolar;
+      updateUI();
+    }
+
+    function toggleSnap() {
+      state.isSnap = !state.isSnap;
+      updateUI();
+    }
+
+    function toggleGrid() {
+      state.isGrid = !state.isGrid;
+      draw();
+      updateUI();
+    }
+
+    function updateUI() {
+      // Przyciski narzędzi
+      orthoModeBtn.classList.toggle('active', state.isOrtho);
+      polarModeBtn.classList.toggle('active', state.isPolar);
+      snapModeBtn.classList.toggle('active', state.isSnap);
+      gridModeBtn.classList.toggle('active', state.isGrid);
+      
+      // Pasek statusu
+      modesDisplay.textContent = 
+        `ORTHO: ${state.isOrtho ? 'ON' : 'OFF'} | ` +
+        `POLAR: ${state.isPolar ? 'ON' : 'OFF'} | ` +
+        `SNAP: ${state.isSnap ? 'ON' : 'OFF'} | ` +
+        `GRID: ${state.isGrid ? 'ON' : 'OFF'}`;
+      
+      // Linia komend
+      commandLine.textContent = 
+        `Komenda: _${state.currentCommand}${state.inputValue ? ' ' + state.inputValue : ''}`;
+    }
+
+    function handleKeyDown(e) {
+      // Skróty narzędzi
+      if (e.key === 'p') setActiveTool('pan');
+      if (e.key === 'l') setActiveTool('line');
+      if (e.key === 'rec') setActiveTool('rect');
+      if (e.key === 'c') setActiveTool('circle');
+      if (e.key === 'pol') setActiveTool('polygon');
+      if (e.key === 'z') setActiveTool('select');
+      if (e.key === 'w') setActiveTool('fill');
+      
+      // Tryby
+      if (e.key === 'F8') toggleOrtho();
+      if (e.key === 'F10') togglePolar();
+      if (e.key === 'F9') toggleSnap();
+      if (e.key === 'F7') toggleGrid();
+      
+      // Inne
+      if (e.key === 'Delete') deleteSelected();
+      if (e.key === 'Escape') cancelCommand();
+      if (e.key === 'Shift') state.isOrtho = true;
+      if (e.key === 'Control') state.isCtrlPressed = true;
+      
+      // Cofnij (Ctrl+Z)
+      if (e.key === 'z' && e.ctrlKey) undo();
+      
+      // Wprowadzanie wartości
+      if ((e.key >= '0' && e.key <= '9') || e.key === '.' || e.key === '@' || e.key === '<') {
+        if (state.isDrawing && state.tempPoint && state.currentTool === 'line') {
+          state.inputValue += e.key;
+          updateUI();
+        }
+      }
+      
+      // Enter potwierdza wprowadzoną wartość
+      if (e.key === 'Enter' || e.key === ' ') {
+        processInput();
+      }
+      
+      updateUI();
+    }
+
+    function handleKeyUp(e) {
+      if (e.key === 'Shift') state.isOrtho = false;
+      if (e.key === 'Control') state.isCtrlPressed = false;
+    }
+
+    function updateLineLength() {
+      state.currentLineLength = parseFloat(lineLengthInput.value) || 0;
+      if (state.points.length === 1 && state.currentTool === 'line') {
+        const start = state.points[0];
+        const angle = Math.atan2(state.tempPoint.y - start.y, state.tempPoint.x - start.x);
+        const newPoint = {
+          x: start.x + state.currentLineLength * Math.cos(angle),
+          y: start.y + state.currentLineLength * Math.sin(angle)
+        };
+        state.tempPoint = newPoint;
+        draw();
+      }
+    }
+
+    function handleMouseDown(e) {
+      const pos = getCanvasCoords(e);
+      
+      if (e.button === 2) { // Prawy przycisk myszy
+        if (state.currentTool === 'pan') {
+          state.isPanning = true;
+          state.panStart = pos;
+        }
+        return;
+      }
+      
+      if (state.currentTool === 'pan') return;
+      
+      if (state.currentTool === 'select') {
+        state.isSelecting = true;
+        state.selectionStart = pos;
+        selectionRect.style.display = 'block';
+        selectionRect.style.left = `${pos.x * state.scale + state.offsetX}px`;
+        selectionRect.style.top = `${pos.y * state.scale + state.offsetY}px`;
+        selectionRect.style.width = '0';
+        selectionRect.style.height = '0';
+        return;
+      }
+      
+      if (!state.isDrawing) {
+        startDrawing();
+      }
+      
+      const snapped = applySnapping(pos);
+      
+      switch(state.currentTool) {
+        case 'line':
+          handleLineTool(snapped);
+          break;
+        case 'rect':
+          handleRectTool(snapped);
+          break;
+        case 'circle':
+          handleCircleTool(snapped);
+          break;
+        case 'polygon':
+          handlePolygonTool(snapped);
+          break;
+        case 'fill':
+          handleFillTool(snapped);
+          break;
+      }
+      
+      draw();
+    }
+
+    function handleMouseMove(e) {
+      const pos = getCanvasCoords(e);
+      coordsDisplay.textContent = `Współrzędne: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}`;
+      
+      if (state.isPanning && state.panStart) {
+        state.offsetX += e.movementX;
+        state.offsetY += e.movementY;
+        draw();
+        return;
+      }
+      
+      if (state.isSelecting && state.selectionStart) {
+        const x = Math.min(state.selectionStart.x, pos.x);
+        const y = Math.min(state.selectionStart.y, pos.y);
+        const width = Math.abs(pos.x - state.selectionStart.x);
+        const height = Math.abs(pos.y - state.selectionStart.y);
+        
+        selectionRect.style.left = `${x * state.scale + state.offsetX}px`;
+        selectionRect.style.top = `${y * state.scale + state.offsetY}px`;
+        selectionRect.style.width = `${width * state.scale}px`;
+        selectionRect.style.height = `${height * state.scale}px`;
+        return;
+      }
+      
+      if (state.isDrawing && state.points.length > 0) {
+        const snapped = applySnapping(pos);
+        state.tempPoint = snapped;
+        
+        if (state.currentTool === 'line' && state.currentLineLength > 0 && state.points.length === 1) {
+          const start = state.points[0];
+          const angle = Math.atan2(snapped.y - start.y, snapped.x - start.x);
+          const newPoint = {
+            x: start.x + state.currentLineLength * Math.cos(angle),
+            y: start.y + state.currentLineLength * Math.sin(angle)
+          };
+          state.tempPoint = newPoint;
+        }
+        
+        draw();
+      }
+    }
+
+    function handleMouseUp(e) {
+      const pos = getCanvasCoords(e);
+      
+      if (state.isPanning) {
+        state.isPanning = false;
+        state.panStart = null;
+        return;
+      }
+      
+      if (state.isSelecting) {
+        state.isSelecting = false;
+        selectionRect.style.display = 'none';
+        
+        const x1 = Math.min(state.selectionStart.x, pos.x);
+        const y1 = Math.min(state.selectionStart.y, pos.y);
+        const x2 = Math.max(state.selectionStart.x, pos.x);
+        const y2 = Math.max(state.selectionStart.y, pos.y);
+        
+        state.selectedObjects = state.objects.filter(obj => {
+          if (obj.type === 'line') {
+            return isLineInRect(obj.points[0], obj.points[1], x1, y1, x2, y2);
+          } else if (obj.type === 'rect') {
+            return isRectInRect(obj.points, x1, y1, x2, y2);
+          } else if (obj.type === 'circle') {
+            return isCircleInRect(obj.center, obj.radius, x1, y1, x2, y2);
+          } else if (obj.type === 'polygon') {
+            return isPolygonInRect(obj.points, x1, y1, x2, y2);
+          }
+          return false;
+        });
+        
+        state.selectionStart = null;
+        draw();
+        return;
+      }
+    }
+
+    function handleWheel(e) {
+      e.preventDefault();
+      
+      const zoomIntensity = 0.1;
+      const mouseX = e.clientX - canvas.getBoundingClientRect().left;
+      const mouseY = e.clientY - canvas.getBoundingClientRect().top;
+      
+      const wheelDelta = e.deltaY < 0 ? 1 : -1;
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, state.scale * (1 + wheelDelta * zoomIntensity)));
+      
+      // Oblicz nowe przesunięcie, aby powiększenie było względem kursora
+      state.offsetX -= (mouseX - state.offsetX) * (newScale / state.scale - 1);
+      state.offsetY -= (mouseY - state.offsetY) * (newScale / state.scale - 1);
+      
+      state.scale = newScale;
+      draw();
+    }
+
+    function handleTouchStart(e) {
+      if (e.touches.length === 2) {
+        // Rozpoczęcie pinch-to-zoom
+        e.preventDefault();
+        state.touchStartDistance = getDistance(
+          e.touches[0].clientX, e.touches[0].clientY,
+          e.touches[1].clientX, e.touches[1].clientY
+        );
+        state.touchStartScale = state.scale;
+      } else if (e.touches.length === 1) {
+        // Przesuwanie
+        const touch = e.touches[0];
+        const pos = getCanvasCoords(touch);
+        state.isPanning = true;
+        state.panStart = pos;
+      }
+    }
+
+    function handleTouchMove(e) {
+      if (e.touches.length === 2) {
+        // Pinch-to-zoom
+        e.preventDefault();
+        const distance = getDistance(
+          e.touches[0].clientX, e.touches[0].clientY,
+          e.touches[1].clientX, e.touches[1].clientY
+        );
+        const newScale = state.touchStartScale * (distance / state.touchStartDistance);
+        state.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+        draw();
+      } else if (e.touches.length === 1 && state.isPanning) {
+        // Przesuwanie
+        const touch = e.touches[0];
+        const pos = getCanvasCoords(touch);
+        state.offsetX += pos.x - state.panStart.x;
+        state.offsetY += pos.y - state.panStart.y;
+        state.panStart = pos;
+        draw();
+      }
+    }
+
+    function handleTouchEnd() {
+      state.isPanning = false;
+      state.panStart = null;
+    }
+
+    function getDistance(x1, y1, x2, y2) {
+      return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+    }
+
+    function handleLineTool(point) {
+      if (state.points.length === 0) {
+        state.points.push(point);
+      } else if (state.points.length === 1) {
+        // Zakończ linię
+        const line = {
+          type: 'line',
+          points: [state.points[0], point]
+        };
+        state.objects.push(line);
+        saveState();
+        resetDrawingState();
+      }
+    }
+
+    function handleRectTool(point) {
+      if (state.points.length === 0) {
+        state.points.push(point);
+      } else if (state.points.length === 1) {
+        // Zakończ prostokąt
+        const p1 = state.points[0];
+        const p2 = point;
+        
+        const rect = {
+          type: 'rect',
+          points: [p1, {x: p1.x, y: p2.y}, p2, {x: p2.x, y: p1.y}]
+        };
+        state.objects.push(rect);
+        saveState();
+        resetDrawingState();
+      }
+    }
+
+    function handleCircleTool(point) {
+      if (state.points.length === 0) {
+        state.points.push(point); // Środek
+      } else if (state.points.length === 1) {
+        // Zakończ okrąg
+        const center = state.points[0];
+        const radius = Math.sqrt(
+          Math.pow(point.x - center.x, 2) + Math.pow(point.y - center.y, 2)
+        );
+        
+        const circle = {
+          type: 'circle',
+          center: center,
+          radius: radius
+        };
+        state.objects.push(circle);
+        saveState();
+        resetDrawingState();
+      }
+    }
+
+    function handlePolygonTool(point) {
+      state.points.push(point);
+      
+      // Dodaj punkty snapowania
+      if (state.points.length >= 2) {
+        const last = state.points[state.points.length - 1];
+        const prev = state.points[state.points.length - 2];
+        state.snapPoints.push({
+          x: (last.x + prev.x) / 2,
+          y: (last.y + prev.y) / 2,
+          type: 'midpoint'
+        });
+      }
+    }
+
+    function handleFillTool(point) {
+      // Znajdź najbliższy zamknięty wielokąt
+      for (const obj of state.objects) {
+        if (obj.type === 'polygon' && obj.isClosed) {
+          const path = createPath(obj.points);
+          if (ctx.isPointInPath(path, point.x, point.y)) {
+            fillPolygon(obj);
+            break;
+          }
+        }
+      }
+    }
+
+    function fillSelected() {
+      for (const obj of state.selectedObjects) {
+        if (obj.type === 'polygon' && obj.isClosed) {
+          fillPolygon(obj);
+        }
+      }
+    }
+
+    function calculateFilling() {
+      if (state.selectedObjects.length === 1 && state.selectedObjects[0].type === 'polygon') {
+        const polygon = state.selectedObjects[0];
+        const results = calculatePolygonFilling(polygon);
+        displayResults(results);
+      } else {
+        alert("Proszę zaznaczyć dokładnie jeden zamknięty wielokąt");
+      }
+    }
+
+    function calculatePolygonFilling(polygon) {
+      const rw = parseFloat(rectWidthInput.value);
+      const rh = parseFloat(rectHeightInput.value);
+      const path = createPath(polygon.points);
+      const angleSteps = [0, 90];
+      let usedRects = 0;
+      const scraps = [];
+      const cuts = [];
+
+      // Tymczasowy canvas do obliczeń
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = canvas.width;
+      tempCanvas.height = canvas.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      
+      // Zastosuj te same transformacje
+      tempCtx.translate(state.offsetX, state.offsetY);
+      tempCtx.scale(state.scale, state.scale);
+      
+      // Narysuj kształt na tymczasowym canvas
+      tempCtx.beginPath();
+      tempCtx.moveTo(polygon.points[0].x, polygon.points[0].y);
+      for (let i = 1; i < polygon.points.length; i++) {
+        tempCtx.lineTo(polygon.points[i].x, polygon.points[i].y);
+      }
+      tempCtx.closePath();
+      tempCtx.fillStyle = 'black';
+      tempCtx.fill();
+
+      for (let angle of angleSteps) {
+        for (let y = 0; y < tempCanvas.height / state.scale; y += rh) {
+          for (let x = 0; x < tempCanvas.width / state.scale; x += rw) {
+            const cx = x + rw / 2;
+            const cy = y + rh / 2;
+            
+            if (!tempCtx.isPointInPath(path, cx, cy)) continue;
+
+            const corners = [
+              rotatePoint(x, y, cx, cy, angle),
+              rotatePoint(x + rw, y, cx, cy, angle),
+              rotatePoint(x + rw, y + rh, cx, cy, angle),
+              rotatePoint(x, y + rh, cx, cy, angle),
+            ];
+
+            if (corners.every(p => tempCtx.isPointInPath(path, p.x, p.y))) {
+              usedRects++;
+            } else {
+              // Sprawdź możliwe docinki
+              let maxH = rh;
+              while (maxH > 0) {
+                const trialCorners = [
+                  rotatePoint(x, y, cx, cy, angle),
+                  rotatePoint(x + rw, y, cx, cy, angle),
+                  rotatePoint(x + rw, y + maxH, cx, cy, angle),
+                  rotatePoint(x, y + maxH, cx, cy, angle),
+                ];
+                if (trialCorners.every(p => tempCtx.isPointInPath(path, p.x, p.y))) {
+                  scraps.push({ w: rw, h: rh - maxH });
+                  cuts.push({ x, y, w: rw, h: maxH, angle });
+                  break;
+                }
+                maxH--;
+              }
+            }
+          }
+        }
+      }
+
+      return {
+        rectangles: usedRects,
+        scraps: scraps,
+        cuts: cuts
+      };
+    }
+
+    function displayResults(results) {
+      scrapsInfo.innerHTML = `<strong>Resztki:</strong> ${results.scraps.length > 0 ? 
+        results.scraps.map(s => `${s.w.toFixed(1)}x${s.h.toFixed(1)}cm`).join(', ') : 
+        'brak'}`;
+      
+      rectanglesInfo.innerHTML = `<strong>Potrzebne prostokąty:</strong> ${results.rectangles}`;
+      
+      cutsInfo.innerHTML = `<strong>Wymagane docinki:</strong> ${results.cuts.length > 0 ? 
+        results.cuts.map(c => `${c.w.toFixed(1)}x${c.h.toFixed(1)}cm`).join(', ') : 
+        'brak'}`;
+    }
+
+    function fillPolygon(polygon) {
+      const rw = parseFloat(rectWidthInput.value);
+      const rh = parseFloat(rectHeightInput.value);
+      const path = createPath(polygon.points);
+      const angleSteps = [0, 90];
+      let usedRects = 0;
+      const scraps = [];
+
+      for (let angle of angleSteps) {
+        for (let y = 0; y < canvas.height / state.scale; y += rh) {
+          for (let x = 0; x < canvas.width / state.scale; x += rw) {
+            const cx = x + rw / 2;
+            const cy = y + rh / 2;
+            if (!ctx.isPointInPath(path, cx, cy)) continue;
+
+            const corners = [
+              rotatePoint(x, y, cx, cy, angle),
+              rotatePoint(x + rw, y, cx, cy, angle),
+              rotatePoint(x + rw, y + rh, cx, cy, angle),
+              rotatePoint(x, y + rh, cx, cy, angle),
+            ];
+
+            if (corners.every(p => ctx.isPointInPath(path, p.x, p.y))) {
+              drawRect(corners);
+              usedRects++;
+            } else {
+              let maxH = rh;
+              while (maxH > 0) {
+                const trialCorners = [
+                  rotatePoint(x, y, cx, cy, angle),
+                  rotatePoint(x + rw, y, cx, cy, angle),
+                  rotatePoint(x + rw, y + maxH, cx, cy, angle),
+                  rotatePoint(x, y + maxH, cx, cy, angle),
+                ];
+                if (trialCorners.every(p => ctx.isPointInPath(path, p.x, p.y))) {
+                  drawRect(trialCorners, 'orange');
+                  scraps.push({ w: rw, h: rh - maxH });
+                  break;
+                }
+                maxH--;
+              }
+            }
+          }
+        }
+      }
+
+      scrapsInfo.innerHTML = `<strong>Zużyto prostokątów:</strong> ${usedRects}`;
+      rectanglesInfo.innerHTML = `<strong>Resztki:</strong> ${scraps.length > 0 ? 
+        scraps.map(s => `${s.w.toFixed(1)}x${s.h.toFixed(1)}cm`).join(', ') : 
+        'brak'}`;
+    }
+
+    function startDrawing() {
+      state.isDrawing = true;
+      updateUI();
+    }
+
+    function cancelCommand() {
+      resetDrawingState();
+      state.currentCommand = '';
+      updateUI();
+    }
+
+    function processInput() {
+      if (!state.inputValue) return;
+      
+      // Przetwarzanie wprowadzonych wartości (@distance<angle)
+      const match = state.inputValue.match(/@?([\d.]+)(?:<([\d.]+))?/);
+      if (match && state.points.length > 0) {
+        const distance = parseFloat(match[1]);
+        const angle = match[2] ? parseFloat(match[2]) : 0;
+        const last = state.points[state.points.length - 1];
+        
+        const newPoint = {
+          x: last.x + distance * Math.cos(angle * Math.PI / 180),
+          y: last.y + distance * Math.sin(angle * Math.PI / 180)
+        };
+        
+        state.points.push(newPoint);
+        state.tempPoint = null;
+        draw();
+      }
+      
+      state.inputValue = '';
+      updateUI();
+    }
+
+    function closeShape() {
+      if (state.points.length >= 3) {
+        const polygon = {
+          type: 'polygon',
+          points: [...state.points],
+          isClosed: true
+        };
+        state.objects.push(polygon);
+        saveState();
+        resetDrawingState();
+        updateUI();
+      }
+    }
+
+    function resetDrawingState() {
+      state.points = [];
+      state.tempPoint = null;
+      state.isClosed = false;
+      state.isDrawing = false;
+      state.snapPoints = [];
+      state.inputValue = '';
+      state.currentLineLength = 0;
+      lineLengthInput.value = '0';
+    }
+
+    function reset() {
+      state.objects = [];
+      state.selectedObjects = [];
+      state.offsetX = 0;
+      state.offsetY = 0;
+      state.scale = 1;
+      resetDrawingState();
+      saveState();
+      draw();
+      scrapsInfo.innerHTML = '';
+      rectanglesInfo.innerHTML = '';
+      cutsInfo.innerHTML = '';
+    }
+
+    function deleteSelected() {
+      state.objects = state.objects.filter(obj => !state.selectedObjects.includes(obj));
+      state.selectedObjects = [];
+      saveState();
+      draw();
+    }
+
+    function undo() {
+      if (state.historyIndex > 0) {
+        state.historyIndex--;
+        const historyState = state.history[state.historyIndex];
+        state.objects = historyState.objects;
+        state.selectedObjects = [];
+        draw();
+      }
+    }
+
+    function saveState() {
+      // Ogranicz historię do 50 stanów
+      if (state.historyIndex < state.history.length - 1) {
+        state.history = state.history.slice(0, state.historyIndex + 1);
+      }
+      
+      if (state.history.length >= 50) {
+        state.history.shift();
+      } else {
+        state.historyIndex++;
+      }
+      
+      state.history.push({
+        objects: JSON.parse(JSON.stringify(state.objects))
+      });
+    }
+
+    function getCanvasCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      return {
+        x: (x - state.offsetX) / state.scale,
+        y: (y - state.offsetY) / state.scale
+      };
+    }
+
+    function applySnapping(pos) {
+      if (!state.isSnap) return pos;
+      
+      // Sprawdź punkty snapowania
+      for (const point of [...state.snapPoints, ...getObjectSnapPoints()]) {
+        const dist = Math.sqrt(
+          Math.pow(pos.x - point.x, 2) + Math.pow(pos.y - point.y, 2)
+        );
+        if (dist < SNAP_DISTANCE / state.scale) {
+          showSnapIndicator(
+            point.x * state.scale + state.offsetX,
+            point.y * state.scale + state.offsetY
+          );
+          return point;
+        }
+      }
+      
+      hideSnapIndicator();
+      
+      // Przyciąganie do siatki
+      if (state.isGrid) {
+        pos = {
+          x: Math.round(pos.x / GRID_SIZE) * GRID_SIZE,
+          y: Math.round(pos.y / GRID_SIZE) * GRID_SIZE
+        };
+      }
+      
+      // Tryb ORTHO
+      if (state.isOrtho && state.points.length > 0) {
+        const last = state.points[state.points.length - 1];
+        const dx = Math.abs(pos.x - last.x);
+        const dy = Math.abs(pos.y - last.y);
+        
+        if (dx > dy) {
+          pos.y = last.y;
+        } else {
+          pos.x = last.x;
+        }
+      }
+      
+      // Śledzenie polarne
+      if (state.isPolar && state.points.length > 0) {
+        const last = state.points[state.points.length - 1];
+        const angle = Math.atan2(pos.y - last.y, pos.x - last.x) * 180 / Math.PI;
+        
+        for (const polarAngle of POLAR_ANGLES) {
+          if (Math.abs(angle - polarAngle) < 5) {
+            const dist = Math.sqrt(
+              Math.pow(pos.x - last.x, 2) + Math.pow(pos.y - last.y, 2)
+            );
+            pos = {
+              x: last.x + dist * Math.cos(polarAngle * Math.PI / 180),
+              y: last.y + dist * Math.sin(polarAngle * Math.PI / 180)
+            };
+            break;
+          }
+        }
+      }
+      
+      return pos;
+    }
+
+    function getObjectSnapPoints() {
+      const snapPoints = [];
+      
+      for (const obj of state.objects) {
+        switch(obj.type) {
+          case 'line':
+            snapPoints.push(obj.points[0], obj.points[1]);
+            snapPoints.push({
+              x: (obj.points[0].x + obj.points[1].x) / 2,
+              y: (obj.points[0].y + obj.points[1].y) / 2,
+              type: 'midpoint'
+            });
+            break;
+          case 'rect':
+            snapPoints.push(...obj.points);
+            snapPoints.push({
+              x: (obj.points[0].x + obj.points[2].x) / 2,
+              y: (obj.points[0].y + obj.points[2].y) / 2,
+              type: 'center'
+            });
+            break;
+          case 'circle':
+            snapPoints.push(obj.center);
+            break;
+          case 'polygon':
+            snapPoints.push(...obj.points);
+            break;
+        }
+      }
+      
+      return snapPoints;
+    }
+
+    function showSnapIndicator(x, y) {
+      snapIndicator.style.display = 'block';
+      snapIndicator.style.left = `${x}px`;
+      snapIndicator.style.top = `${y}px`;
+    }
+
+    function hideSnapIndicator() {
+      snapIndicator.style.display = 'none';
+    }
+
+    function isLineInRect(p1, p2, x1, y1, x2, y2) {
+      return (p1.x >= x1 && p1.x <= x2 && p1.y >= y1 && p1.y <= y2) ||
+             (p2.x >= x1 && p2.x <= x2 && p2.y >= y1 && p2.y <= y2);
+    }
+
+    function isRectInRect(points, x1, y1, x2, y2) {
+      return points.some(p => p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2);
+    }
+
+    function isCircleInRect(center, radius, x1, y1, x2, y2) {
+      const closestX = Math.max(x1, Math.min(center.x, x2));
+      const closestY = Math.max(y1, Math.min(center.y, y2));
+      const distance = Math.sqrt(
+        Math.pow(center.x - closestX, 2) + Math.pow(center.y - closestY, 2)
+      );
+      return distance <= radius;
+    }
+
+    function isPolygonInRect(points, x1, y1, x2, y2) {
+      return points.some(p => p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2);
+    }
+
+    function draw() {
+      // Reset transformacji
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Zastosuj transformacje
+      ctx.save();
+      ctx.translate(state.offsetX, state.offsetY);
+      ctx.scale(state.scale, state.scale);
+
+      // Rysuj siatkę
+      if (state.isGrid) {
+        drawGrid();
+      }
+
+      // Rysuj obiekty
+      state.objects.forEach(obj => drawObject(obj));
+      
+      // Rysuj zaznaczenia
+      state.selectedObjects.forEach(obj => drawSelection(obj));
+      
+      // Rysuj tymczasowe elementy
+      if (state.points.length > 0) {
+        drawTempPath();
+      }
+
+      ctx.restore();
+    }
+
+    function drawObject(obj) {
+      ctx.save();
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = 2 / state.scale;
+      
+      switch(obj.type) {
+        case 'line':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          ctx.lineTo(obj.points[1].x, obj.points[1].y);
+          ctx.stroke();
+          break;
+          
+        case 'rect':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          ctx.lineTo(obj.points[1].x, obj.points[1].y);
+          ctx.lineTo(obj.points[2].x, obj.points[2].y);
+          ctx.lineTo(obj.points[3].x, obj.points[3].y);
+          ctx.closePath();
+          ctx.stroke();
+          break;
+          
+        case 'circle':
+          ctx.beginPath();
+          ctx.arc(obj.center.x, obj.center.y, obj.radius, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+          
+        case 'polygon':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          for (let i = 1; i < obj.points.length; i++) {
+            ctx.lineTo(obj.points[i].x, obj.points[i].y);
+          }
+          if (obj.isClosed) ctx.closePath();
+          ctx.stroke();
+          break;
+      }
+      
+      ctx.restore();
+    }
+
+    function drawSelection(obj) {
+      ctx.save();
+      ctx.strokeStyle = '#0066FF';
+      ctx.lineWidth = 2 / state.scale;
+      ctx.setLineDash([5 / state.scale, 5 / state.scale]);
+      
+      switch(obj.type) {
+        case 'line':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          ctx.lineTo(obj.points[1].x, obj.points[1].y);
+          ctx.stroke();
+          break;
+          
+        case 'rect':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          ctx.lineTo(obj.points[1].x, obj.points[1].y);
+          ctx.lineTo(obj.points[2].x, obj.points[2].y);
+          ctx.lineTo(obj.points[3].x, obj.points[3].y);
+          ctx.closePath();
+          ctx.stroke();
+          break;
+          
+        case 'circle':
+          ctx.beginPath();
+          ctx.arc(obj.center.x, obj.center.y, obj.radius, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+          
+        case 'polygon':
+          ctx.beginPath();
+          ctx.moveTo(obj.points[0].x, obj.points[0].y);
+          for (let i = 1; i < obj.points.length; i++) {
+            ctx.lineTo(obj.points[i].x, obj.points[i].y);
+          }
+          if (obj.isClosed) ctx.closePath();
+          ctx.stroke();
+          break;
+      }
+      
+      ctx.restore();
+    }
+
+    function createPath(pts) {
+      const path = new Path2D();
+      path.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        path.lineTo(pts[i].x, pts[i].y);
+      }
+      path.closePath();
+      return path;
+    }
+
+    function rotatePoint(x, y, cx, cy, angle) {
+      const rad = angle * Math.PI / 180;
+      const dx = x - cx;
+      const dy = y - cy;
+      return {
+        x: cx + dx * Math.cos(rad) - dy * Math.sin(rad),
+        y: cy + dx * Math.sin(rad) + dy * Math.cos(rad)
+      };
+    }
+
+    function drawRect(corners, color = 'rgba(50, 200, 50, 0.6)') {
+      ctx.save();
+      ctx.translate(state.offsetX, state.offsetY);
+      ctx.scale(state.scale, state.scale);
+      
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < corners.length; i++) {
+        ctx.lineTo(corners[i].x, corners[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1 / state.scale;
+      ctx.stroke();
+      
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>
